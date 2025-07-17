@@ -75,31 +75,28 @@ jobs:
           echo "has_permission=false" >> $GITHUB_OUTPUT # Set WORKFLOW_PERMISSION to false.
         fi
     
-    - name: Check for alive branch
+    - name: Check if alive branch exists
       if: steps.workflow-permission.outputs.has_permission == 'true'
+      id: alive-branch-check
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        if [[ "$(gh api -H "Accept: application/vnd.github+json" /repos/${{ github.repository_owner }}/${{ github.event.repository.name }}/branches | jq --raw-output 'any(.name=="alive")')" == "true" ]]; then
-          echo "Branch 'alive' exists."
-          echo "ALIVE_BRANCH_EXISTS=true" >> $GITHUB_ENV # Set ALIVE_BRANCH_EXISTS to true
+        EXISTS=$(gh api -H "Accept: application/vnd.github+json" /repos/${{ github.repository_owner }}/${{ github.event.repository.name }}/branches | jq -r 'map(select(.name == "alive")) | length')
+        if [[ "$EXISTS" -gt 0 ]]; then
+          echo "exists=true" >> $GITHUB_OUTPUT
         else
-          echo "Branch 'alive' does not exist."
-          echo "ALIVE_BRANCH_EXISTS=false" >> $GITHUB_ENV # Set ALIVE_BRANCH_EXISTS to false
+          echo "exists=false" >> $GITHUB_OUTPUT
         fi
-    
-    - name: Create alive branch
-      if: env.ALIVE_BRANCH_EXISTS == 'false'
+
+    - name: Create alive branch if it does not exist
+      if: steps.alive-branch-check.outputs.exists == 'false'
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # Get ref for Artificial-Pancreas/iAPS:main
         SHA=$(curl -sS https://api.github.com/repos/${{ env.UPSTREAM_REPO }}/git/refs \
-          | jq '.[] | select(.ref == "refs/heads/main" ) | .object.sha' \
-          | tr -d '"'
-        );
-        
-        # Create alive branch based on Artificial-Pancreas/iAPS:dev
+          | jq -r '.[] | select(.ref == "refs/heads/main") | .object.sha'
+        )
+        echo "Creating alive branch from main SHA: $SHA"
         gh api \
           --method POST \
           -H "Authorization: token $GITHUB_TOKEN" \
@@ -107,6 +104,7 @@ jobs:
           /repos/${{ github.repository_owner }}/${{ github.event.repository.name }}/git/refs \
           -f ref='refs/heads/alive' \
           -f sha=$SHA
+
   
   # Performs keepalive to avoid stale fork
   check_latest_from_upstream:
