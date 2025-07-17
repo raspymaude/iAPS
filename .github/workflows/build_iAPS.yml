@@ -64,27 +64,44 @@ jobs:
       env: 
         TOKEN_TO_CHECK: ${{ secrets.GH_PAT }}
       run: |
-        PERMISSIONS=$(curl -sS -f -I -H "Authorization: token ${{ env.TOKEN_TO_CHECK }}" https://api.github.com | grep ^x-oauth-scopes: | cut -d' ' -f2-);
-        
-        if [[ $PERMISSIONS =~ "workflow" || $PERMISSIONS == "" ]]; then
-          echo "GH_PAT holds workflow permissions or is fine-grained PAT."
-          echo "has_permission=true" >> $GITHUB_OUTPUT # Set WORKFLOW_PERMISSION to true.
-        else 
-          echo "GH_PAT lacks workflow permissions."
-          echo "Automated build features will be skipped!"
-          echo "has_permission=false" >> $GITHUB_OUTPUT # Set WORKFLOW_PERMISSION to false.
+        if [ -z "$TOKEN_TO_CHECK" ]; then
+          echo "GH_PAT is not set."
+          echo "has_permission=false" >> $GITHUB_OUTPUT
+          exit 0
         fi
-    
+
+        echo "Checking GH_PAT scopes..."
+        RESPONSE=$(curl -sS -I -H "Authorization: token $TOKEN_TO_CHECK" https://api.github.com)
+        echo "$RESPONSE"
+
+        if echo "$RESPONSE" | grep -q "x-oauth-scopes:"; then
+          SCOPES=$(echo "$RESPONSE" | grep "x-oauth-scopes:" | cut -d' ' -f2-)
+          echo "Detected scopes: $SCOPES"
+          if echo "$SCOPES" | grep -qi "workflow"; then
+            echo "GH_PAT has workflow permission."
+            echo "has_permission=true" >> $GITHUB_OUTPUT
+          else
+            echo "GH_PAT lacks workflow permission."
+            echo "has_permission=false" >> $GITHUB_OUTPUT
+          fi
+        else
+          echo "Header not found. Assuming fine-grained PAT with permissions."
+          echo "has_permission=true" >> $GITHUB_OUTPUT
+        fi
+
     - name: Check if alive branch exists
       if: steps.workflow-permission.outputs.has_permission == 'true'
       id: alive-branch-check
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
+        echo "Checking if 'alive' branch exists..."
         EXISTS=$(gh api -H "Accept: application/vnd.github+json" /repos/${{ github.repository_owner }}/${{ github.event.repository.name }}/branches | jq -r 'map(select(.name == "alive")) | length')
         if [[ "$EXISTS" -gt 0 ]]; then
+          echo "Branch exists."
           echo "exists=true" >> $GITHUB_OUTPUT
         else
+          echo "Branch does not exist."
           echo "exists=false" >> $GITHUB_OUTPUT
         fi
 
@@ -92,11 +109,15 @@ jobs:
       if: steps.alive-branch-check.outputs.exists == 'false'
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        UPSTREAM_REPO: ${{ env.UPSTREAM_REPO }}
       run: |
-        SHA=$(curl -sS https://api.github.com/repos/${{ env.UPSTREAM_REPO }}/git/refs \
-          | jq -r '.[] | select(.ref == "refs/heads/main") | .object.sha'
-        )
-        echo "Creating alive branch from main SHA: $SHA"
+        echo "Fetching latest commit SHA from upstream main..."
+        SHA=$(curl -sS https://api.github.com/repos/${UPSTREAM_REPO}/git/refs | jq -r '.[] | select(.ref == "refs/heads/main") | .object.sha')
+        if [ -z "$SHA" ]; then
+          echo "Error: Could not find SHA for upstream main branch."
+          exit 1
+        fi
+        echo "Creating 'alive' branch from SHA: $SHA"
         gh api \
           --method POST \
           -H "Authorization: token $GITHUB_TOKEN" \
